@@ -212,7 +212,7 @@ export function ResearchStream() {
                           <a
                             {...props}
                             href={href}
-                            className="inline-flex items-center align-baseline mx-0.5 px-1.5 py-0.5 text-[10px] font-medium bg-secondary-50 text-secondary-700 rounded hover:bg-secondary-100 transition-colors no-underline"
+                            className="inline-flex items-center align-baseline bottom-1 ml-0.5 px-0.5 py-[.3px] text-[10px] font-medium bg-gray-200 text-gray-800 rounded hover:bg-gray-300 transition-colors no-underline"
                             target="_blank"
                             rel="noopener noreferrer"
                             title={href}
