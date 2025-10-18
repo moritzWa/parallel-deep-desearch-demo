@@ -1,5 +1,15 @@
 import OpenAI from 'openai';
 import { NextRequest } from 'next/server';
+import {
+  StreamEvent,
+  WebSearchSearchingEvent,
+  WebSearchCompletedEvent,
+  ContentEvent,
+  TextDoneEvent,
+  JobDoneEvent,
+  ErrorEvent,
+  CompleteEvent,
+} from '@/types/stream-events';
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -8,7 +18,10 @@ const openai = new OpenAI({
 /**
  * Runs a single Deep Research job and returns a streaming response
  */
-async function* runSingleDeepResearch(query: string, jobId: number) {
+async function* runSingleDeepResearch(
+  query: string,
+  jobId: number
+): AsyncGenerator<Exclude<StreamEvent, CompleteEvent>, void, unknown> {
   // Use the responses endpoint instead of chat.completions
   const stream = await openai.responses.create({
     model: 'o4-mini-deep-research-2025-06-26',
@@ -27,63 +40,80 @@ async function* runSingleDeepResearch(query: string, jobId: number) {
   });
 
   for await (const event of stream) {
+    // Log all events for debugging
+    console.log(`[Job ${jobId}] Event:`, event.type);
+
     // Handle text deltas (streaming content)
     if (event.type === 'response.output_text.delta') {
-      yield {
+      console.log(`[Job ${jobId}] Text delta: "${event.delta}"`);
+      const contentEvent: ContentEvent = {
         type: 'content',
         job: jobId,
         content: event.delta,
         timestamp: Date.now(),
       };
+      yield contentEvent;
     }
 
     // Handle text completion
     if (event.type === 'response.output_text.done') {
-      yield {
+      const textDoneEvent: TextDoneEvent = {
         type: 'text_done',
         job: jobId,
         item_id: event.item_id,
         timestamp: Date.now(),
       };
+      yield textDoneEvent;
     }
 
     // Handle web search events
     if (event.type === 'response.web_search_call.searching') {
-      yield {
+      console.log(`[Job ${jobId}] Web search #${event.sequence_number}`);
+      const searchEvent: WebSearchSearchingEvent = {
         type: 'web_search_searching',
         job: jobId,
         item_id: event.item_id,
         sequence_number: event.sequence_number,
         timestamp: Date.now(),
       };
+      yield searchEvent;
     }
 
     if (event.type === 'response.web_search_call.completed') {
-      yield {
+
+      // log raw web search completed event 
+      console.log(`[Job ${jobId}] Web search completed event:`, event);
+
+      const completedEvent: WebSearchCompletedEvent = {
         type: 'web_search_completed',
         job: jobId,
         item_id: event.item_id,
         timestamp: Date.now(),
       };
+      yield completedEvent;
     }
 
     // Handle completion
     if (event.type === 'response.completed') {
-      yield {
+      console.log(`[Job ${jobId}] Completed`);
+      const doneEvent: JobDoneEvent = {
         type: 'done',
         job: jobId,
         timestamp: Date.now(),
       };
+      yield doneEvent;
     }
 
     // Handle errors
     if (event.type === 'response.failed') {
-      yield {
+      console.error(`[Job ${jobId}] Failed`);
+      const errorEvent: ErrorEvent = {
         type: 'error',
         job: jobId,
         error: 'Response failed',
         timestamp: Date.now(),
       };
+      yield errorEvent;
     }
   }
 }
@@ -118,30 +148,39 @@ export async function POST(req: NextRequest) {
 
           // Merge streams by racing them
           type Generator = AsyncGenerator<any, void, unknown>;
-          const activeGenerators = new Set<Generator>(generators);
 
-          while (activeGenerators.size > 0) {
-            // Create a promise for the next value from each generator
-            const promises = Array.from(activeGenerators).map(async (gen) => ({
-              gen,
-              result: await gen.next(),
-            }));
+          // Create a map to track pending promises for each generator
+          const pendingPromises = new Map<Generator, Promise<{gen: Generator, result: IteratorResult<any>}>>();
 
-            // Race to get the next available value
-            const { gen, result } = await Promise.race(promises);
+          // Initialize all generators with their first next() call
+          for (const gen of generators) {
+            pendingPromises.set(gen, gen.next().then((result: IteratorResult<Exclude<StreamEvent, CompleteEvent>>) => ({ gen, result })));
+          }
+
+          while (pendingPromises.size > 0) {
+            // Race all pending promises
+            const { gen, result } = await Promise.race(pendingPromises.values());
 
             if (result.done) {
-              activeGenerators.delete(gen);
+              // Generator is complete, remove it
+              pendingPromises.delete(gen);
             } else {
               // Send the event as SSE
               const data = JSON.stringify(result.value);
               controller.enqueue(encoder.encode(`data: ${data}\n\n`));
+
+              // Immediately start waiting for the next value from this generator
+              pendingPromises.set(gen, gen.next().then((result: IteratorResult<Exclude<StreamEvent, CompleteEvent>>) => ({ gen, result })));
             }
           }
 
           // Send final done event
+          const completeEvent: CompleteEvent = {
+            type: 'complete',
+            timestamp: Date.now(),
+          };
           controller.enqueue(
-            encoder.encode(`data: ${JSON.stringify({ type: 'complete' })}\n\n`)
+            encoder.encode(`data: ${JSON.stringify(completeEvent)}\n\n`)
           );
           controller.close();
         } catch (error) {
