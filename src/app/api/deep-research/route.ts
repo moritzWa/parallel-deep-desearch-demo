@@ -150,27 +150,27 @@ export async function POST(req: NextRequest) {
           type Generator = AsyncGenerator<any, void, unknown>;
 
           // Create a map to track pending promises for each generator
-          const pendingPromises = new Map<Generator, Promise<{gen: Generator, result: IteratorResult<any>}>>();
+          const pendingPromises = new Map<Generator, Promise<{generator: Generator, result: IteratorResult<any>}>>();
 
           // Initialize all generators with their first next() call
-          for (const gen of generators) {
-            pendingPromises.set(gen, gen.next().then((result: IteratorResult<Exclude<StreamEvent, CompleteEvent>>) => ({ gen, result })));
+          for (const generator of generators) {
+            pendingPromises.set(generator, generator.next().then((result: IteratorResult<Exclude<StreamEvent, CompleteEvent>>) => ({ generator, result })));
           }
 
           while (pendingPromises.size > 0) {
-            // Race all pending promises
-            const { gen, result } = await Promise.race(pendingPromises.values());
+            // 1. Race all current promises
+            const { generator, result } = await Promise.race(pendingPromises.values());
 
             if (result.done) {
-              // Generator is complete, remove it
-              pendingPromises.delete(gen);
+              // 2a. Generator finished, remove it
+              pendingPromises.delete(generator);
             } else {
-              // Send the event as SSE
+              // 2b. Process the event
               const data = JSON.stringify(result.value);
               controller.enqueue(encoder.encode(`data: ${data}\n\n`));
 
-              // Immediately start waiting for the next value from this generator
-              pendingPromises.set(gen, gen.next().then((result: IteratorResult<Exclude<StreamEvent, CompleteEvent>>) => ({ gen, result })));
+              // 2c. Create NEW promise for this generator's next value
+              pendingPromises.set(generator, generator.next().then((result: IteratorResult<Exclude<StreamEvent, CompleteEvent>>) => ({ generator, result })));
             }
           }
 
